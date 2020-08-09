@@ -1,65 +1,58 @@
-/* eslint-disable no-console */
-
-import express from 'express';
-import { createServer } from 'http';
-import { graphiqlExpress, graphqlExpress } from 'apollo-server-express';
-import { makeExecutableSchema } from 'graphql-tools';
-import { SubscriptionServer } from 'subscriptions-transport-ws';
-import { execute, subscribe } from 'graphql';
-
-import './config/db';
-import typeDefs from './graphql/schema';
-import resolvers from './graphql/resolvers';
-import constants from './config/constants';
-import middlewares from './config/middlewares';
-import mocks from './mocks';
-
+import {express} from 'express';
+import {cookieParser} from 'cookie-parser';
+import {cookieSession} from 'cookie-session';
+import {fs} from 'fs' ;
+import {passport} from 'passport' ;
+import {env} from process.env.NODE_ENV || 'development';
+import {config} from './config/config';
+import {auth} from './config/middlewares/authorization' ;
+import {mongoose} from('mongoose');
 const app = express();
+const port = process.env.PORT || 3000;
+const cookieParserKey = process.env.COOKIE_KEY || "super55";
+const sessionKey1 = process.env.SESSIONKEYONE || "key1";
+const sessionKey2 = process.env.SESSIONKEYTWO || "key2";
+const promiseRetry = require('promise-retry');
+app.use(cookieParser(cookieParserKey));
+app.use(cookieSession({
+  name: 'session',
+  keys: [sessionKey1, sessionKey2]
+}));
 
-middlewares(app);
+const options = {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  reconnectTries: 60,
+  reconnectInterval: 1000,
+  poolSize: 10,
+  bufferMaxEntries: 0 
+};
 
-app.use((req, res, next) => setTimeout(next, 0));
+const promiseRetryOptions = {
+  retries: options.reconnectTries,
+  factor: 2,
+  minTimeout: options.reconnectInterval,
+  maxTimeout: 5000
+};
 
-app.use(
-  '/graphiql',
-  graphiqlExpress({
-    endpointURL: constants.GRAPHQL_PATH,
-    subscriptionsEndpoint: `ws://localhost:${constants.PORT}${constants.SUBSCRIPTIONS_PATH}`
-  }),
-);
+const connect = () => {
+  return promiseRetry((retry, number) => {
+    console.log(`MongoClient connecting to ${config.db} - retry number: ${number}`);
+    return mongoose.connect(config.db, options).catch(retry)
+  }, promiseRetryOptions);
+};
 
-const schema = makeExecutableSchema({
-  typeDefs,
-  resolvers,
+const models_path = __dirname+'/app/models';
+fs.readdirSync(models_path).forEach(file => {
+  require(models_path+'/'+file);
 });
 
-app.use(
-  constants.GRAPHQL_PATH,
-  graphqlExpress(req => ({
-    schema,
-    context: {
-      user: req.user
-    }
-  })),
-);
+require('./config/passport')(passport, config);
+require('./config/express')(app, config, passport);
+require('./config/routes')(app, passport, auth);
 
-const graphQLServer = createServer(app);
+app.listen(port);
+console.log('Express app started on port ' + port);
 
-// mocks().then(() => {
-  graphQLServer.listen(constants.PORT, err => {
-    if (err) {
-      console.error(err);
-    } else {
-      new SubscriptionServer({ // eslint-disable-line
-        schema,
-        execute,
-        subscribe
-      }, {
-        server: graphQLServer,
-        path: constants.SUBSCRIPTIONS_PATH
-      })
-
-      console.log(`App listen to port: ${constants.PORT}`);
-    }
-  });
-// });
+connect();
+module.exports = app;
